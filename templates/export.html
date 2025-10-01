@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Vocabulary Export</title>
+    <style>
+      :root { color-scheme: only light; }
+      body {
+        font-family: "Segoe UI", Arial, sans-serif;
+        margin: 2rem;
+        background-color: #ffffff;
+        color: #0f172a;
+      }
+      header {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 2px solid #e2e8f0;
+        padding-bottom: 0.75rem;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.75rem;
+      }
+      .meta {
+        color: #475569;
+        font-size: 0.9rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      thead tr {
+        background-color: #0f172a;
+        color: #ffffff;
+      }
+      th, td {
+        padding: 0.6rem;
+        border: 1px solid #cbd5f5;
+        text-align: left;
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) {
+        background-color: #f8fafc;
+      }
+      .word {
+        font-weight: 600;
+        color: #1e293b;
+      }
+      .muted {
+        color: #64748b;
+        font-size: 0.85rem;
+      }
+      .empty-state {
+        padding: 1.5rem;
+        background-color: #f8fafc;
+        border: 1px dashed #cbd5f5;
+        border-radius: 0.5rem;
+        color: #475569;
+      }
+      @media print {
+        body {
+          margin: 1cm;
+        }
+        header {
+          border-bottom-color: #cbd5f5;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Vocabulary Export</h1>
+      <div class="meta">Generated at {{ generated_at }} UTC - Total entries: {{ items|length }}</div>
+    </header>
+
+    {% if items %}
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Word</th>
+            <th scope="col">Sentence</th>
+            <th scope="col">Synonym</th>
+            <th scope="col">Type</th>
+            <th scope="col">Base Word</th>
+            <th scope="col">Created At</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in items %}
+            <tr>
+              <td class="word">{{ item.word or '' }}</td>
+              <td>{{ item.sentence or '' }}</td>
+              <td>{{ item.synonym or '' }}</td>
+              <td>{{ item.type or '' }}</td>
+              <td>{{ item.base_word or '' }}</td>
+              <td><span class="muted">{{ item.created_at or '' }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="empty-state">
+        No vocabulary entries available at the moment.
+      </div>
+    {% endif %}
+  </body>
+</html>

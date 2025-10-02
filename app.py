@@ -67,8 +67,12 @@ def load_items() -> List[Dict[str, Any]]:
             "synonym": str(item.get("synonym", "") or "").strip(),
             "type": str(item.get("type", "") or "").strip(),
             "base_word": str(item.get("base_word", "") or "").strip(),
+            "native_meaning": str(item.get("native_meaning", "") or "").strip(),
             "created_at": str(item.get("created_at", "") or ""),
         }
+        if "native_meaning" not in item:
+            needs_persist = True
+
         cleaned.append(entry)
 
     if needs_persist:
@@ -109,6 +113,7 @@ def add_word() -> Response:
     synonym = (request.form.get("synonym") or "").strip()
     type_ = (request.form.get("type") or "").strip()
     base_word = (request.form.get("base_word") or "").strip()
+    native_meaning = (request.form.get("native_meaning") or "").strip()
 
     if not word:
         flash("Field 'word' is required.", "error")
@@ -123,6 +128,7 @@ def add_word() -> Response:
         "synonym": synonym,
         "type": type_,
         "base_word": base_word,
+        "native_meaning": native_meaning,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -132,6 +138,7 @@ def add_word() -> Response:
         and existing.get("synonym") == new_entry["synonym"]
         and existing.get("type") == new_entry["type"]
         and existing.get("base_word") == new_entry["base_word"]
+        and existing.get("native_meaning", "") == new_entry["native_meaning"]
         for existing in items
     )
 
@@ -168,6 +175,7 @@ def edit_entry(entry_id: str) -> Response:
     synonym = (request.form.get("synonym") or "").strip()
     type_ = (request.form.get("type") or "").strip()
     base_word = (request.form.get("base_word") or "").strip()
+    native_meaning = (request.form.get("native_meaning") or "").strip()
 
     if not word:
         flash("Field 'word' is required.", "error")
@@ -180,6 +188,7 @@ def edit_entry(entry_id: str) -> Response:
         and other.get("synonym") == synonym
         and other.get("type") == type_
         and other.get("base_word") == base_word
+        and other.get("native_meaning", "") == native_meaning
         for other in items
     )
 
@@ -194,6 +203,7 @@ def edit_entry(entry_id: str) -> Response:
             "synonym": synonym,
             "type": type_,
             "base_word": base_word,
+            "native_meaning": native_meaning,
         }
     )
     save_items(items)
@@ -222,7 +232,7 @@ def export_csv() -> Response:
         items = []
 
     buffer = io.StringIO()
-    fieldnames = ["word", "sentence", "synonym", "type", "base_word", "created_at"]
+    fieldnames = ["word", "sentence", "synonym", "native_meaning", "type", "base_word", "created_at"]
     writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
     writer.writeheader()
 
@@ -269,7 +279,7 @@ def export_xlsx() -> Response:
     sheet = workbook.active
     sheet.title = "Vocabulary"
 
-    headers = ["word", "sentence", "synonym", "type", "base_word", "created_at"]
+    headers = ["word", "sentence", "synonym", "native_meaning", "type", "base_word", "created_at"]
     sheet.append(headers)
 
     header_font = Font(bold=True)

@@ -59,6 +59,11 @@
                   <input class="form-control" id="synonym" name="synonym" placeholder="e.g., omnipresent" />
                 </div>
 
+                <div class="mb-3">
+                  <label for="native_meaning" class="form-label">Native Meaning (Optional)</label>
+                  <input class="form-control" id="native_meaning" name="native_meaning" placeholder="e.g., meaning in native language" />
+                </div>
+
                 <div class="row g-3">
                   <div class="col-12 col-sm-6">
                     <label for="type" class="form-label">Type</label>
@@ -100,7 +105,10 @@
                     <div class="card-body">
                       <div class="d-flex align-items-start justify-content-between gap-3">
                         <div class="flex-grow-1">
-                          <h3 class="h6 mb-1">{{ it.word }}</h3>
+                          <h3 class="h6 mb-1">
+                            <span class="badge rounded-pill text-bg-secondary me-2">{{ loop.index }}</span>
+                            {{ it.word }}
+                          </h3>
                           {% if it.type %}
                             <span class="badge text-bg-dark">{{ it.type }}</span>
                           {% endif %}
@@ -120,6 +128,9 @@
                       </div>
                       {% if it.sentence %}
                         <p class="mt-2 mb-1"><em>"{{ it.sentence }}"</em></p>
+                      {% endif %}
+                      {% if it.native_meaning %}
+                        <div class="mt-2 small text-muted">Native meaning: <span class="text-reset">{{ it.native_meaning }}</span></div>
                       {% endif %}
                       {% if it.synonym %}
                         <div><small class="text-muted">Synonym:</small> {{ it.synonym }}</div>
@@ -148,6 +159,10 @@
                           <div class="mb-3">
                             <label class="form-label" for="edit-synonym-{{ it.id }}">Synonym</label>
                             <input class="form-control" id="edit-synonym-{{ it.id }}" name="synonym" value="{{ it.synonym }}">
+                          </div>
+                          <div class="mb-3">
+                            <label class="form-label" for="edit-native-meaning-{{ it.id }}">Native Meaning (Optional)</label>
+                            <input class="form-control" id="edit-native-meaning-{{ it.id }}" name="native_meaning" value="{{ it.native_meaning }}">
                           </div>
                           <div class="row g-3">
                             <div class="col-12 col-sm-6">

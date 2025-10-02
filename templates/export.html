@@ -79,9 +79,11 @@
       <table>
         <thead>
           <tr>
+            <th scope="col">#</th>
             <th scope="col">Word</th>
             <th scope="col">Sentence</th>
             <th scope="col">Synonym</th>
+            <th scope="col">Native Meaning</th>
             <th scope="col">Type</th>
             <th scope="col">Base Word</th>
             <th scope="col">Created At</th>
@@ -90,9 +92,11 @@
         <tbody>
           {% for item in items %}
             <tr>
+              <td class="muted">{{ loop.index }}</td>
               <td class="word">{{ item.word or '' }}</td>
               <td>{{ item.sentence or '' }}</td>
               <td>{{ item.synonym or '' }}</td>
+              <td>{{ item.native_meaning or '' }}</td>
               <td>{{ item.type or '' }}</td>
               <td>{{ item.base_word or '' }}</td>
               <td><span class="muted">{{ item.created_at or '' }}</span></td>

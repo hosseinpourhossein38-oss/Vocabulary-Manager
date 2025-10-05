@@ -9,18 +9,31 @@
   </head>
   <body>
     <div class="container py-4 py-md-5">
-      <header class="d-flex align-items-center justify-content-between mb-4">
+      <header class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-4">
         <h1 class="h3 m-0">Vocabulary Manager</h1>
-        <div class="btn-group">
-          <button type="button" class="btn btn-outline-light btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
-            Export
-          </button>
-          <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
-            <li><a class="dropdown-item" href="{{ url_for('export_csv') }}">Export CSV</a></li>
-            <li><a class="dropdown-item" href="{{ url_for('export_html') }}">Export HTML</a></li>
-            <li><a class="dropdown-item" href="{{ url_for('export_xlsx') }}">Export XLSX</a></li>
-            <li><a class="dropdown-item" href="{{ url_for('export_json') }}">Export JSON</a></li>
-          </ul>
+        <div class="d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center gap-2 ms-md-auto">
+          {% if current_user.is_authenticated %}
+            <div class="btn-group">
+              <button type="button" class="btn btn-outline-light btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                Export
+              </button>
+              <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+                <li><a class="dropdown-item" href="{{ url_for('export_csv') }}">Export CSV</a></li>
+                <li><a class="dropdown-item" href="{{ url_for('export_html') }}">Export HTML</a></li>
+                <li><a class="dropdown-item" href="{{ url_for('export_xlsx') }}">Export XLSX</a></li>
+                <li><a class="dropdown-item" href="{{ url_for('export_json') }}">Export JSON</a></li>
+              </ul>
+            </div>
+            <form class="d-flex flex-column flex-sm-row gap-2" method="POST" action="{{ url_for('import_words') }}" enctype="multipart/form-data">
+              <input class="form-control form-control-sm" type="file" name="file" accept=".csv,.json,.xlsx" required>
+              <button type="submit" class="btn btn-primary btn-sm">Import</button>
+            </form>
+            <form method="POST" action="{{ url_for('logout') }}" class="d-grid">
+              <button type="submit" class="btn btn-outline-light btn-sm">Logout</button>
+            </form>
+          {% else %}
+            <a class="btn btn-outline-light btn-sm" href="{{ url_for('login') }}">Login</a>
+          {% endif %}
         </div>
       </header>
 

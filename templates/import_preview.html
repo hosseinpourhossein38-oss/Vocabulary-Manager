@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Import Preview - Vocabulary Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
+  </head>
+  <body>
+    <div class="container py-4 py-md-5">
+      <header class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-4">
+        <h1 class="h4 m-0">Import Preview</h1>
+        <a class="btn btn-outline-light btn-sm" href="{{ url_for('index') }}">Back to dashboard</a>
+      </header>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="mb-3">
+            {% for category, msg in messages %}
+              {% set cls = 'alert-light' %}
+              {% if category == 'success' %}{% set cls = 'alert-success' %}{% endif %}
+              {% if category == 'warning' %}{% set cls = 'alert-warning' %}{% endif %}
+              {% if category == 'error' %}{% set cls = 'alert-danger' %}{% endif %}
+              <div class="alert {{ cls }} py-2 px-3 mb-2" role="alert">{{ msg }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <section class="mb-4">
+        <div class="row g-3">
+          <div class="col-12 col-md-3">
+            <div class="card text-bg-dark h-100">
+              <div class="card-body">
+                <span class="text-secondary text-uppercase small">File</span>
+                <div class="fs-6 fw-semibold mt-1">{{ filename or 'Unknown' }}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-3">
+            <div class="card text-bg-dark h-100">
+              <div class="card-body">
+                <span class="text-secondary text-uppercase small">Total rows</span>
+                <div class="fs-4 fw-semibold mt-1">{{ total_rows }}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-3">
+            <div class="card text-bg-dark h-100">
+              <div class="card-body">
+                <span class="text-secondary text-uppercase small">Ready to import</span>
+                <div class="fs-4 fw-semibold mt-1 text-success">{{ new_count }}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-3">
+            <div class="card text-bg-dark h-100">
+              <div class="card-body">
+                <span class="text-secondary text-uppercase small">Duplicates skipped</span>
+                <div class="fs-4 fw-semibold mt-1 text-warning">{{ duplicate_count }}</div>
+                {% if skipped_missing_word %}
+                  <div class="small text-warning">{{ skipped_missing_word }} missing word</div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h2 class="h5 m-0">Preview (first {{ preview_rows|length }} of {{ new_count }})</h2>
+          {% if new_count > preview_limit %}
+            <span class="text-secondary small">Showing first {{ preview_limit }} rows only.</span>
+          {% endif %}
+        </div>
+        <div class="table-responsive border rounded-3 overflow-hidden">
+          <table class="table table-dark table-striped table-hover mb-0 align-middle">
+            <thead>
+              <tr>
+                {% for field in ['word', 'sentence', 'synonym', 'native_meaning', 'type', 'base_word', 'created_at'] %}
+                  <th scope="col" class="text-capitalize">{{ field.replace('_', ' ') }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in preview_rows %}
+                <tr>
+                  <td>{{ row.word }}</td>
+                  <td>{{ row.sentence }}</td>
+                  <td>{{ row.synonym }}</td>
+                  <td>{{ row.native_meaning }}</td>
+                  <td>{{ row.type }}</td>
+                  <td>{{ row.base_word }}</td>
+                  <td>{{ row.created_at }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="d-flex flex-column flex-sm-row gap-2">
+        <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Cancel</a>
+        <form method="POST" action="{{ url_for('confirm_import') }}">
+          <button type="submit" class="btn btn-primary">Import {{ new_count }} {{ 'entry' if new_count == 1 else 'entries' }}</button>
+        </form>
+      </section>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+  </body>
+</html>

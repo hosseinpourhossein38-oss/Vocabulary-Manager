@@ -2,3 +2,4 @@ Flask
 gunicorn
 openpyxl
 flask-login
+python-dotenv

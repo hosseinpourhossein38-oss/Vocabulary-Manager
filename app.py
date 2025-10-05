@@ -321,7 +321,30 @@ def logout() -> Response:
     return redirect(url_for("index"))
 
 
+@app.route("/healthz", methods=["GET"])
+def healthz() -> Response:
+    """Health check endpoint for deployment platforms."""
+    return Response("OK", status=200, mimetype="text/plain")
+
+
+@app.before_request
+def require_auth():
+    """Require authentication for all routes except login, logout, healthz, and static files."""
+    # Allow access to login, logout, healthz, and static files without authentication
+    if request.endpoint in ['login', 'login_submit', 'logout', 'healthz']:
+        return None
+    
+    # Allow access to static files
+    if request.endpoint == 'static':
+        return None
+    
+    # Redirect to login if not authenticated
+    if not current_user.is_authenticated:
+        return redirect(url_for('login', next=request.url))
+
+
 @app.route("/", methods=["GET"])
+@login_required
 def index() -> str:
     items = get_sorted_items()
     return render_template("index.html", items=items, total=len(items), edit_entry_id=None)

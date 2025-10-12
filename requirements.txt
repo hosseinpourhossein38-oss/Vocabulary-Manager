@@ -3,3 +3,6 @@ gunicorn
 openpyxl
 flask-login
 python-dotenv
+SQLAlchemy
+alembic
+psycopg2-binary

@@ -1,0 +1,150 @@
+{% extends 'base.html' %}
+{% block title %}Log Time - {{ goal.title }}{% endblock %}
+{% block content %}
+    <style>
+        .goal-detail-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0;
+        }
+        .goal-header { }
+        .goal-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        .goal-category {
+            font-size: 0.9rem;
+            display: inline-block;
+            margin-bottom: 1rem;
+        }
+        .goal-notes {
+            font-size: 0.9rem;
+        }
+        .time-log-section {
+            margin-bottom: 1.5rem;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+        .form-group textarea {
+            height: 80px;
+            resize: vertical;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .recent-entries { }
+        .entry-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            margin: 0.5rem 0;
+            border-radius: 4px;
+        }
+        .entry-details {
+            flex: 1;
+        }
+        .entry-date {
+            font-weight: 500;
+        }
+        .entry-note {
+            font-size: 0.9rem;
+        }
+        .entry-minutes {
+            font-weight: 500;
+        }
+        @media (max-width: 768px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+    <div class="goal-detail-container">
+        <div class="card shadow-sm mb-3">
+          <div class="card-body">
+            <div class="goal-title">{{ goal.title }}</div>
+            {% if goal.category %}
+              <span class="badge text-bg-secondary">{{ goal.category }}</span>
+            {% endif %}
+            {% if goal.notes %}
+              <div class="goal-notes text-muted mt-2">{{ goal.notes }}</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="card shadow-sm mb-3 time-log-section">
+          <div class="card-body">
+            <h2 class="h5">Log Time</h2>
+            <form method="POST" action="{{ url_for('log_time', goal_id=goal.id) }}" class="mt-2">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="started_at">Started At *</label>
+                  <input type="datetime-local" id="started_at" name="started_at" required class="form-control">
+                </div>
+                <div class="form-group">
+                  <label for="minutes">Minutes *</label>
+                  <input type="number" id="minutes" name="minutes" min="1" required class="form-control">
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="note">Note</label>
+                <textarea id="note" name="note" placeholder="Optional note about this time entry" class="form-control" rows="3"></textarea>
+              </div>
+              <button type="submit" class="btn btn-primary">Log Time</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="card shadow-sm recent-entries">
+          <div class="card-body">
+            <h2 class="h6">Recent Time Entries</h2>
+            {% if recent_entries %}
+              {% for entry in recent_entries %}
+                <div class="entry-item card border-0">
+                  <div class="card-body py-2 d-flex align-items-center justify-content-between">
+                    <div class="entry-details">
+                      <div class="entry-date">{{ entry.started_at.strftime('%Y-%m-%d %H:%M') }}</div>
+                      {% if entry.note %}
+                        <div class="entry-note text-muted">{{ entry.note }}</div>
+                      {% endif %}
+                    </div>
+                    <div class="entry-minutes">{{ entry.minutes }} min</div>
+                  </div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="text-muted">No time entries logged yet for this goal.</div>
+            {% endif %}
+          </div>
+        </div>
+    </div>
+
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        document.getElementById('started_at').value = `${year}-${month}-${day}T${hours}:${minutes}`;
+      });
+    </script>
+{% endblock %}

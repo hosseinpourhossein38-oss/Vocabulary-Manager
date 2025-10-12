@@ -6,13 +6,13 @@ import json
 import os
 from dotenv import load_dotenv
 load_dotenv(override=True)
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from uuid import uuid4
 from urllib.parse import urljoin, urlparse
 
-from flask import Flask, Response, flash, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, redirect, render_template, request, session, url_for, jsonify
 from flask_login import (
     LoginManager,
     UserMixin,
@@ -26,12 +26,21 @@ from werkzeug.utils import secure_filename
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Border, Font, Side
 from openpyxl.utils import get_column_letter
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import func, and_, or_
 
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+# Import our database models and configuration
+from models import Goal, TimeEntry
+from db import engine, SessionLocal, init_db
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
+
+# Initialize database
+init_db()
 
 ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip()
 ADMIN_HASH = (os.environ.get("ADMIN_HASH") or "").strip()
@@ -327,6 +336,243 @@ def healthz() -> Response:
     return Response("OK", status=200, mimetype="text/plain")
 
 
+# Dashboard route
+@app.route("/dashboard", methods=["GET"])
+@login_required
+def dashboard() -> str:
+    """Main dashboard showing vocabulary and goals summary."""
+    db = SessionLocal()
+    try:
+        # Get vocabulary summary
+        vocab_items = get_sorted_items()
+        vocab_total = len(vocab_items)
+        recent_vocab = vocab_items[:5]  # Last 5 entries
+        
+        # Get goals summary
+        active_goals = db.query(Goal).filter(Goal.is_active == True).all()
+        
+        # Get time tracking summary
+        today = datetime.now().date()
+        week_start = today - timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
+        
+        # Today's time
+        today_time = db.query(func.sum(TimeEntry.minutes)).join(Goal).filter(
+            func.date(TimeEntry.started_at) == today
+        ).scalar() or 0
+        
+        # This week's time
+        week_time = db.query(func.sum(TimeEntry.minutes)).join(Goal).filter(
+            func.date(TimeEntry.started_at) >= week_start
+        ).scalar() or 0
+        
+        # This month's time
+        month_time = db.query(func.sum(TimeEntry.minutes)).join(Goal).filter(
+            func.date(TimeEntry.started_at) >= month_start
+        ).scalar() or 0
+        
+        return render_template("dashboard.html", 
+                             vocab_total=vocab_total,
+                             recent_vocab=recent_vocab,
+                             active_goals=active_goals,
+                             today_time=today_time,
+                             week_time=week_time,
+                             month_time=month_time)
+    finally:
+        db.close()
+
+
+# Goals CRUD routes
+@app.route("/goals", methods=["GET"])
+@login_required
+def goals_list() -> str:
+    """List all goals."""
+    db = SessionLocal()
+    try:
+        goals = db.query(Goal).order_by(Goal.created_at.desc()).all()
+        return render_template("goals.html", goals=goals)
+    finally:
+        db.close()
+
+
+@app.route("/goals", methods=["POST"])
+@login_required
+def create_goal() -> Response:
+    """Create a new goal."""
+    title = request.form.get("title", "").strip()
+    category = request.form.get("category", "").strip()
+    notes = request.form.get("notes", "").strip()
+    
+    if not title:
+        flash("Title is required.", "error")
+        return redirect(url_for("goals_list"))
+    
+    db = SessionLocal()
+    try:
+        goal = Goal(title=title, category=category, notes=notes)
+        db.add(goal)
+        db.commit()
+        flash("Goal created successfully!", "success")
+        return redirect(url_for("goals_list"))
+    finally:
+        db.close()
+
+
+@app.route("/goals/<int:goal_id>/edit", methods=["POST"])
+@login_required
+def update_goal(goal_id: int) -> Response:
+    """Update a goal."""
+    title = request.form.get("title", "").strip()
+    category = request.form.get("category", "").strip()
+    notes = request.form.get("notes", "").strip()
+    is_active = request.form.get("is_active") == "on"
+    
+    if not title:
+        flash("Title is required.", "error")
+        return redirect(url_for("goals_list"))
+    
+    db = SessionLocal()
+    try:
+        goal = db.query(Goal).filter(Goal.id == goal_id).first()
+        if not goal:
+            flash("Goal not found.", "error")
+            return redirect(url_for("goals_list"))
+        
+        goal.title = title
+        goal.category = category
+        goal.notes = notes
+        goal.is_active = is_active
+        db.commit()
+        flash("Goal updated successfully!", "success")
+        return redirect(url_for("goals_list"))
+    finally:
+        db.close()
+
+
+@app.route("/goals/<int:goal_id>/delete", methods=["POST"])
+@login_required
+def delete_goal(goal_id: int) -> Response:
+    """Delete a goal."""
+    db = SessionLocal()
+    try:
+        goal = db.query(Goal).filter(Goal.id == goal_id).first()
+        if not goal:
+            flash("Goal not found.", "error")
+            return redirect(url_for("goals_list"))
+        
+        db.delete(goal)
+        db.commit()
+        flash("Goal deleted successfully!", "success")
+        return redirect(url_for("goals_list"))
+    finally:
+        db.close()
+
+
+# Time logging routes
+@app.route("/goals/<int:goal_id>/log", methods=["GET"])
+@login_required
+def log_time_form(goal_id: int) -> str:
+    """Form to log time for a specific goal."""
+    db = SessionLocal()
+    try:
+        goal = db.query(Goal).filter(Goal.id == goal_id).first()
+        if not goal:
+            flash("Goal not found.", "error")
+            return redirect(url_for("goals_list"))
+        
+        # Get recent time entries for this goal
+        recent_entries = db.query(TimeEntry).filter(TimeEntry.goal_id == goal_id)\
+            .order_by(TimeEntry.started_at.desc()).limit(10).all()
+        
+        return render_template("goal_detail.html", goal=goal, recent_entries=recent_entries)
+    finally:
+        db.close()
+
+
+@app.route("/goals/<int:goal_id>/log", methods=["POST"])
+@login_required
+def log_time(goal_id: int) -> Response:
+    """Log time for a specific goal."""
+    started_at_str = request.form.get("started_at", "").strip()
+    minutes = request.form.get("minutes", "").strip()
+    note = request.form.get("note", "").strip()
+    
+    if not started_at_str or not minutes:
+        flash("Started at and minutes are required.", "error")
+        return redirect(url_for("log_time_form", goal_id=goal_id))
+    
+    try:
+        started_at = datetime.fromisoformat(started_at_str.replace('Z', '+00:00'))
+        minutes_int = int(minutes)
+    except (ValueError, TypeError):
+        flash("Invalid date or minutes format.", "error")
+        return redirect(url_for("log_time_form", goal_id=goal_id))
+    
+    db = SessionLocal()
+    try:
+        goal = db.query(Goal).filter(Goal.id == goal_id).first()
+        if not goal:
+            flash("Goal not found.", "error")
+            return redirect(url_for("goals_list"))
+        
+        time_entry = TimeEntry(
+            goal_id=goal_id,
+            started_at=started_at,
+            minutes=minutes_int,
+            note=note
+        )
+        db.add(time_entry)
+        db.commit()
+        flash("Time logged successfully!", "success")
+        return redirect(url_for("log_time_form", goal_id=goal_id))
+    finally:
+        db.close()
+
+
+# API routes
+@app.route("/api/goals/summary", methods=["GET"])
+@login_required
+def goals_summary_api() -> Response:
+    """API endpoint for goals summary data."""
+    period = request.args.get("period", "day")  # day, week, month
+    
+    db = SessionLocal()
+    try:
+        today = datetime.now().date()
+        
+        if period == "day":
+            start_date = today
+        elif period == "week":
+            start_date = today - timedelta(days=today.weekday())
+        elif period == "month":
+            start_date = today.replace(day=1)
+        else:
+            return jsonify({"error": "Invalid period"}), 400
+        
+        # Get goals with their time totals
+        goals_data = db.query(
+            Goal.id,
+            Goal.title,
+            Goal.category,
+            func.sum(TimeEntry.minutes).label('total_minutes')
+        ).outerjoin(TimeEntry).filter(
+            func.date(TimeEntry.started_at) >= start_date
+        ).group_by(Goal.id, Goal.title, Goal.category).all()
+        
+        result = []
+        for goal_id, title, category, total_minutes in goals_data:
+            result.append({
+                "id": goal_id,
+                "title": title,
+                "category": category,
+                "total_minutes": total_minutes or 0
+            })
+        
+        return jsonify({"goals": result, "period": period})
+    finally:
+        db.close()
+
+
 @app.before_request
 def require_auth():
     """Require authentication for all routes except login, logout, healthz, and static files."""
@@ -346,6 +592,15 @@ def require_auth():
 @app.route("/", methods=["GET"])
 @login_required
 def index() -> str:
+    """Vocabulary page as home."""
+    items = get_sorted_items()
+    return render_template("index.html", items=items, total=len(items), edit_entry_id=None)
+
+
+@app.route("/vocabulary", methods=["GET"])
+@login_required
+def vocabulary() -> str:
+    """Vocabulary management page."""
     items = get_sorted_items()
     return render_template("index.html", items=items, total=len(items), edit_entry_id=None)
 
@@ -362,7 +617,7 @@ def add_word() -> Response:
 
     if not word:
         flash("Field 'word' is required.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     items = load_items()
     existing_keys = {deduplication_key(item) for item in items}
@@ -380,12 +635,12 @@ def add_word() -> Response:
 
     if deduplication_key(new_entry) in existing_keys:
         flash("This exact entry already exists.", "warning")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     items.append(new_entry)
     save_items(items)
     flash("Word added successfully!", "success")
-    return redirect(url_for("index"))
+    return redirect(url_for("vocabulary"))
 
 
 @app.route("/edit/<entry_id>", methods=["GET"])
@@ -394,7 +649,7 @@ def edit_entry_form(entry_id: str) -> Response | str:
     items = get_sorted_items()
     if not any(item.get("id") == entry_id for item in items):
         flash("Entry not found.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
     return render_template("index.html", items=items, total=len(items), edit_entry_id=entry_id)
 
 
@@ -406,7 +661,7 @@ def edit_entry(entry_id: str) -> Response:
 
     if target is None:
         flash("Entry not found.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     word = (request.form.get("word") or "").strip()
     sentence = (request.form.get("sentence") or "").strip()
@@ -439,7 +694,7 @@ def edit_entry(entry_id: str) -> Response:
     target.update(candidate)
     save_items(items)
     flash("Entry updated.", "success")
-    return redirect(url_for("index"))
+    return redirect(url_for("vocabulary"))
 
 
 @app.route("/delete/<entry_id>", methods=["POST"])
@@ -450,11 +705,11 @@ def delete_entry(entry_id: str) -> Response:
 
     if len(remaining) == len(items):
         flash("Entry not found.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     save_items(remaining)
     flash("Entry deleted.", "success")
-    return redirect(url_for("index"))
+    return redirect(url_for("vocabulary"))
 
 
 @app.route("/export/csv", methods=["GET"])
@@ -561,28 +816,28 @@ def import_words() -> Response:
     file = request.files.get("file")
     if file is None or not file.filename:
         flash("Please choose a file to import.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     filename = secure_filename(file.filename)
     extension = Path(filename).suffix.lower()
     if extension not in ALLOWED_IMPORT_EXTENSIONS:
         flash("Unsupported file type. Please upload a CSV, JSON, or XLSX file.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     data = file.read()
     if not data:
         flash("Uploaded file is empty.", "warning")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     try:
         parsed_rows = parse_import_payload(data, extension)
     except ValueError as exc:
         flash(str(exc), "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     if not parsed_rows:
         flash("No valid rows found in the uploaded file.", "warning")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     items = load_items()
     existing_keys = {deduplication_key(item) for item in items}
@@ -607,7 +862,7 @@ def import_words() -> Response:
         flash("All rows in the uploaded file already exist or are invalid.", "warning")
         session.pop(PENDING_IMPORT_SESSION_KEY, None)
         session.pop(PENDING_IMPORT_META_SESSION_KEY, None)
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     session[PENDING_IMPORT_SESSION_KEY] = new_rows
     session[PENDING_IMPORT_META_SESSION_KEY] = {
@@ -629,7 +884,7 @@ def import_preview() -> Response | str:
 
     if not pending_rows or not meta:
         flash("No import in progress.", "warning")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     total_rows = int(meta.get("total_rows", len(pending_rows)))
     duplicate_count = int(meta.get("duplicate_rows", 0))
@@ -656,7 +911,7 @@ def confirm_import() -> Response:
     pending_rows = session.get(PENDING_IMPORT_SESSION_KEY)
     if not pending_rows:
         flash("No rows pending import.", "warning")
-        return redirect(url_for("index"))
+        return redirect(url_for("vocabulary"))
 
     items = load_items()
     existing_keys = {deduplication_key(item) for item in items}
@@ -692,7 +947,7 @@ def confirm_import() -> Response:
     else:
         flash("No new entries were imported.", "warning")
 
-    return redirect(url_for("index"))
+    return redirect(url_for("vocabulary"))
 
 
 if __name__ == "__main__":

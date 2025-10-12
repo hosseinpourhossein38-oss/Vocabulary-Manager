@@ -1,0 +1,112 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard - Vocabulary Manager{% endblock %}
+{% block content %}
+  <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-3">
+    <h1 class="h4 m-0">Dashboard</h1>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h5">📚 Vocabulary Summary</h2>
+          <div class="row row-cols-1 row-cols-sm-3 g-3 my-1">
+            <div class="col">
+              <div class="card h-100">
+                <div class="card-body text-center">
+                  <div class="display-6">{{ vocab_total }}</div>
+                  <div class="text-muted">Total Words</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <h3 class="h6 mt-3">Recent Additions</h3>
+          {% if recent_vocab %}
+            <div class="d-flex flex-column gap-2">
+              {% for item in recent_vocab %}
+                <div class="card border-0">
+                  <div class="card-body py-2">
+                    <div class="d-flex align-items-start justify-content-between gap-3">
+                      <div>
+                        <div class="fw-semibold">{{ item.word }}</div>
+                        {% if item.native_meaning %}
+                          <div class="text-muted small">{{ item.native_meaning }}</div>
+                        {% endif %}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="text-muted">No vocabulary entries yet.</div>
+          {% endif %}
+
+          <div class="mt-3">
+            <a href="{{ url_for('vocabulary') }}" class="btn btn-primary">Manage Vocabulary</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h5">🎯 Goals & Time Tracking</h2>
+          <div class="row row-cols-1 row-cols-sm-3 g-3 my-1">
+            <div class="col">
+              <div class="card h-100">
+                <div class="card-body text-center">
+                  <div class="display-6">{{ today_time }}</div>
+                  <div class="text-muted">Minutes Today</div>
+                </div>
+              </div>
+            </div>
+            <div class="col">
+              <div class="card h-100">
+                <div class="card-body text-center">
+                  <div class="display-6">{{ week_time }}</div>
+                  <div class="text-muted">This Week</div>
+                </div>
+              </div>
+            </div>
+            <div class="col">
+              <div class="card h-100">
+                <div class="card-body text-center">
+                  <div class="display-6">{{ month_time }}</div>
+                  <div class="text-muted">This Month</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <h3 class="h6 mt-3">Active Goals</h3>
+          {% if active_goals %}
+            <div class="d-flex flex-column gap-2">
+              {% for goal in active_goals %}
+                <div class="card border-0">
+                  <div class="card-body py-2 d-flex align-items-center justify-content-between">
+                    <div>
+                      <div class="fw-semibold">{{ goal.title }}</div>
+                      {% if goal.category %}
+                        <div class="text-muted small">{{ goal.category }}</div>
+                      {% endif %}
+                    </div>
+                    <a href="{{ url_for('log_time_form', goal_id=goal.id) }}" class="btn btn-outline-light btn-sm">Log Time</a>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="text-muted">No active goals yet.</div>
+          {% endif %}
+
+          <div class="mt-3">
+            <a href="{{ url_for('goals_list') }}" class="btn btn-primary">Manage Goals</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

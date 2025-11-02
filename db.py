@@ -1,34 +1,32 @@
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from models import Base
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Database configuration
-DATABASE_URL = os.environ.get('DATABASE_URL')
-if DATABASE_URL:
-    # For production (Render) - use PostgreSQL
-    if DATABASE_URL.startswith('postgres://'):
-        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-    engine = create_engine(DATABASE_URL)
-else:
-    # For development - use SQLite
-    engine = create_engine('sqlite:///data/app.db')
+# .env کنار همین فایل
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+raw_url = (os.getenv("DATABASE_URL") or "").strip()
+if not raw_url:
+    raise RuntimeError("DATABASE_URL is missing. Check your .env")
 
-def get_db():
-    """Dependency to get database session"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+url = raw_url
+if url.startswith("postgres://"):
+    url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+elif url.startswith("postgresql://") and "+psycopg2" not in url:
+    url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+engine = create_engine(url, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+# ❗️فقط همین‌جا Base را تعریف کن. هیچ ایمپورتی از models نکن.
+Base = declarative_base()
+
+# db.py
+# ... همین هایی که قبلاً گذاشتیم: engine, SessionLocal, Base
 
 def init_db():
-    """Initialize database tables"""
-    # Ensure data directory exists
-    os.makedirs('data', exist_ok=True)
-    
-    # Create all tables
+    import models  # ← ثبت همه مدل‌ها
     Base.metadata.create_all(bind=engine)

@@ -4,42 +4,43 @@ import csv
 import io
 import json
 import os
-from dotenv import load_dotenv
-load_dotenv(override=True)
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-from uuid import uuid4
 from urllib.parse import urljoin, urlparse
-
-from flask import Flask, Response, flash, redirect, render_template, request, session, url_for, jsonify
-from flask_login import (
-    LoginManager,
-    UserMixin,
-    current_user,
-    login_required,
-    login_user,
-    logout_user,
-)
-from werkzeug.security import check_password_hash
-from werkzeug.utils import secure_filename
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Border, Font, Side
-from openpyxl.utils import get_column_letter
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import func, and_, or_
 
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-# Import our database models and configuration
-from models import Goal, TimeEntry
-from db import engine, SessionLocal, init_db
+from flask import (
+    Flask, Response, flash, redirect, render_template,
+    request, session, url_for, jsonify
+)
+from flask_login import (
+    LoginManager, UserMixin, current_user,
+    login_required, login_user, logout_user,
+)
+from werkzeug.security import check_password_hash
+from werkzeug.utils import secure_filename
 
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Border, Font, Side
+from openpyxl.utils import get_column_letter
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+# --- DB & Models ---
+from db import engine, SessionLocal, init_db
+from models import Vocabulary, Goal, TimeEntry
+init_db()
+# ------------------------------------------------------------------------------
+# App & Auth setup
+# ------------------------------------------------------------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 
-# Initialize database
+# initialize DB (create tables if missing)
 init_db()
 
 ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip()
@@ -64,8 +65,14 @@ def load_user(user_id: str) -> AdminUser | None:
         return AdminUser(user_id)
     return None
 
-DATA_DIR = Path("data")
-DATA_FILE = DATA_DIR / "vocab.json"
+
+# ------------------------------------------------------------------------------
+# Constants / helpers
+# ------------------------------------------------------------------------------
+MAX_FILE_SIZE_MB = 2
+app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE_MB * 1024 * 1024
+
+# همان فیلدهایی که قبلاً در اکسپورت‌ها داشتی
 EXPORT_FIELDS = [
     "word",
     "sentence",
@@ -81,199 +88,49 @@ ALLOWED_IMPORT_EXTENSIONS = {".csv", ".json", ".xlsx"}
 PENDING_IMPORT_SESSION_KEY = "pending_import_rows"
 PENDING_IMPORT_META_SESSION_KEY = "pending_import_meta"
 
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
-
-
-def ensure_store() -> None:
-    """Make sure the data directory and file exist before use."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not DATA_FILE.exists():
-        DATA_FILE.write_text("[]\n", encoding="utf-8")
-
-
-def load_items() -> List[Dict[str, Any]]:
-    """Load vocabulary entries, normalise fields, and backfill missing IDs."""
-    ensure_store()
-    try:
-        raw = DATA_FILE.read_text(encoding="utf-8")
-    except OSError:
-        return []
-
-    if not raw.strip():
-        return []
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        save_items([])
-        return []
-
-    if not isinstance(data, list):
-        return []
-
-    cleaned: List[Dict[str, Any]] = []
-    needs_persist = False
-
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-
-        entry_id = str(item.get("id") or "").strip()
-        if not entry_id:
-            entry_id = uuid4().hex
-            needs_persist = True
-
-        entry = {
-            "id": entry_id,
-            "word": str(item.get("word", "") or "").strip(),
-            "sentence": str(item.get("sentence", "") or "").strip(),
-            "synonym": str(item.get("synonym", "") or "").strip(),
-            "type": str(item.get("type", "") or "").strip(),
-            "base_word": str(item.get("base_word", "") or "").strip(),
-            "native_meaning": str(item.get("native_meaning", "") or "").strip(),
-            "created_at": str(item.get("created_at", "") or ""),
-        }
-        if "native_meaning" not in item:
-            needs_persist = True
-
-        cleaned.append(entry)
-
-    if needs_persist:
-        save_items(cleaned)
-
-    return cleaned
-
-
-def save_items(items: List[Dict[str, Any]]) -> None:
-    """Persist entries safely with UTF-8 encoding."""
-    ensure_store()
-    temp_path = DATA_FILE.with_suffix(".tmp")
-    payload = json.dumps(items, ensure_ascii=False, indent=2)
-    temp_path.write_text(f"{payload}\n", encoding="utf-8")
-    temp_path.replace(DATA_FILE)
-
-
-def get_sorted_items() -> List[Dict[str, Any]]:
-    items = load_items()
-    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return items
-
 
 def export_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
 
 
-def normalise_field_key(key: Any) -> str:
-    if key is None:
-        return ""
-    return str(key).strip().lower().replace(" ", "_")
+def _str(v: Any) -> str:
+    return "" if v is None else str(v).strip()
 
 
-def stringify_value(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).strip()
+def _norm_key(k: Any) -> str:
+    return "" if k is None else str(k).strip().lower().replace(" ", "_")
 
 
-def normalise_import_row(raw: Dict[str, Any]) -> Dict[str, str]:
-    prepared = {normalise_field_key(k): v for k, v in raw.items()}
-    entry: Dict[str, str] = {}
-    for field in IMPORT_FIELDS:
-        entry[field] = stringify_value(prepared.get(field, ""))
-    return entry
+def _serialize_vocab(v: Vocabulary) -> Dict[str, Any]:
+    """ORM -> dict with same keys the templates expect (type instead of pos)."""
+    return {
+        "id": str(v.id),
+        "word": v.word or "",
+        "sentence": v.sentence or "",
+        "synonym": v.synonym or "",
+        "native_meaning": v.native_meaning or "",
+        "type": v.pos or "",          # map pos -> type
+        "base_word": v.base_word or "",
+        "created_at": (v.created_at or datetime.now(timezone.utc)).isoformat(),
+    }
 
 
-def parse_import_payload(data: bytes, extension: str) -> List[Dict[str, str]]:
-    ext = extension.lower()
-    if ext == ".csv":
-        return _parse_csv(data)
-    if ext == ".json":
-        return _parse_json(data)
-    if ext == ".xlsx":
-        return _parse_xlsx(data)
-    raise ValueError("Unsupported file type.")
+def _dedup_key_dict(d: Dict[str, Any]) -> Tuple[str, str, str, str, str, str]:
+    return tuple(_str(d.get(k)) for k in DEDUP_FIELDS)
 
 
-def _parse_csv(data: bytes) -> List[Dict[str, str]]:
-    try:
-        text_stream = data.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise ValueError("CSV file must be UTF-8 encoded.") from exc
-    reader = csv.DictReader(io.StringIO(text_stream))
-    if reader.fieldnames is None:
-        raise ValueError("CSV file is missing a header row.")
-    rows: List[Dict[str, str]] = []
-    for raw_row in reader:
-        normalised = normalise_import_row(raw_row)
-        if not any(normalised[field] for field in DEDUP_FIELDS):
-            continue
-        rows.append(normalised)
-    return rows
+# ------------------------------------------------------------------------------
+# Healthz
+# ------------------------------------------------------------------------------
+@app.route("/healthz", methods=["GET"])
+def healthz() -> Response:
+    return Response("OK", status=200, mimetype="text/plain")
 
 
-def _parse_json(data: bytes) -> List[Dict[str, str]]:
-    try:
-        text_stream = data.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise ValueError("JSON file must be UTF-8 encoded.") from exc
-    try:
-        payload: Any = json.loads(text_stream)
-    except json.JSONDecodeError as exc:
-        raise ValueError("JSON file is not valid JSON.") from exc
-    if isinstance(payload, dict):
-        if "items" in payload and isinstance(payload["items"], list):
-            payload = payload["items"]
-        else:
-            payload = [payload]
-    if not isinstance(payload, list):
-        raise ValueError("JSON file must contain a list of entries.")
-    rows: List[Dict[str, str]] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        normalised = normalise_import_row(item)
-        if not any(normalised[field] for field in DEDUP_FIELDS):
-            continue
-        rows.append(normalised)
-    return rows
-
-
-def _parse_xlsx(data: bytes) -> List[Dict[str, str]]:
-    buffer = io.BytesIO(data)
-    try:
-        workbook = load_workbook(buffer, read_only=True, data_only=True)
-    except Exception as exc:
-        raise ValueError("XLSX file could not be read.") from exc
-    try:
-        sheet = workbook.active
-        header_row = next(sheet.iter_rows(values_only=True), None)
-        if header_row is None:
-            return []
-        headers = [normalise_field_key(value) for value in header_row]
-        rows: List[Dict[str, str]] = []
-        for row_values in sheet.iter_rows(values_only=True, min_row=2):
-            raw_entry: Dict[str, Any] = {}
-            for index, value in enumerate(row_values):
-                if index >= len(headers):
-                    continue
-                header_key = headers[index]
-                if not header_key:
-                    continue
-                raw_entry[header_key] = value
-            normalised = normalise_import_row(raw_entry)
-            if not any(normalised[field] for field in DEDUP_FIELDS):
-                continue
-            rows.append(normalised)
-        return rows
-    finally:
-        workbook.close()
-
-
-def deduplication_key(item: Dict[str, Any]) -> Tuple[str, str, str, str, str, str]:
-    return tuple(stringify_value(item.get(field)) for field in DEDUP_FIELDS)
-
-
-def is_safe_redirect(target: str) -> bool:
+# ------------------------------------------------------------------------------
+# Auth views
+# ------------------------------------------------------------------------------
+def _is_safe_redirect(target: str) -> bool:
     if not target:
         return False
     host_url = urlparse(request.host_url)
@@ -284,14 +141,10 @@ def is_safe_redirect(target: str) -> bool:
 @app.route("/login", methods=["GET"])
 def login() -> Response | str:
     next_url = request.args.get("next")
-    if next_url and not is_safe_redirect(next_url):
+    if next_url and not _is_safe_redirect(next_url):
         next_url = None
-
     if current_user.is_authenticated:
-        if next_url:
-            return redirect(next_url)
-        return redirect(url_for("index"))
-
+        return redirect(next_url or url_for("index"))
     return render_template("login.html", next_url=next_url)
 
 
@@ -300,7 +153,7 @@ def login_submit() -> Response:
     email = (request.form.get("email") or "").strip()
     password = request.form.get("password") or ""
     next_url = request.form.get("next")
-    if next_url and not is_safe_redirect(next_url):
+    if next_url and not _is_safe_redirect(next_url):
         next_url = None
 
     if not ADMIN_EMAIL or not ADMIN_HASH:
@@ -308,12 +161,12 @@ def login_submit() -> Response:
         return redirect(url_for("login", next=next_url) if next_url else url_for("login"))
 
     try:
-        password_matches = check_password_hash(ADMIN_HASH, password)
+        ok = check_password_hash(ADMIN_HASH, password)
     except ValueError:
         flash("Authentication is misconfigured.", "error")
         return redirect(url_for("login", next=next_url) if next_url else url_for("login"))
 
-    if email == ADMIN_EMAIL and password_matches:
+    if email == ADMIN_EMAIL and ok:
         login_user(AdminUser(ADMIN_EMAIL))
         flash("Logged in successfully.", "success")
         return redirect(next_url or url_for("index"))
@@ -330,63 +183,68 @@ def logout() -> Response:
     return redirect(url_for("index"))
 
 
-@app.route("/healthz", methods=["GET"])
-def healthz() -> Response:
-    """Health check endpoint for deployment platforms."""
-    return Response("OK", status=200, mimetype="text/plain")
+# ------------------------------------------------------------------------------
+# Global auth guard
+# ------------------------------------------------------------------------------
+@app.before_request
+def require_auth():
+    if request.endpoint in ["login", "login_submit", "logout", "healthz", "static"]:
+        return None
+    if not current_user.is_authenticated:
+        return redirect(url_for("login", next=request.url))
 
 
-# Dashboard route
+# ------------------------------------------------------------------------------
+# Dashboard
+# ------------------------------------------------------------------------------
 @app.route("/dashboard", methods=["GET"])
 @login_required
 def dashboard() -> str:
-    """Main dashboard showing vocabulary and goals summary."""
-    db = SessionLocal()
+    db: Session = SessionLocal()
     try:
-        # Get vocabulary summary
-        vocab_items = get_sorted_items()
-        vocab_total = len(vocab_items)
-        recent_vocab = vocab_items[:5]  # Last 5 entries
-        
-        # Get goals summary
-        active_goals = db.query(Goal).filter(Goal.is_active == True).all()
-        
-        # Get time tracking summary
+        # vocab summary
+        last5 = db.query(Vocabulary).order_by(Vocabulary.created_at.desc()).limit(5).all()
+        recent_vocab = [_serialize_vocab(v) for v in last5]
+        vocab_total = db.query(func.count(Vocabulary.id)).scalar() or 0
+
+        # goals + time
+        active_goals = db.query(Goal).filter(Goal.is_active.is_(True)).all()
+
         today = datetime.now().date()
         week_start = today - timedelta(days=today.weekday())
         month_start = today.replace(day=1)
-        
-        # Today's time
-        today_time = db.query(func.sum(TimeEntry.minutes)).join(Goal).filter(
+
+        today_time = db.query(func.sum(TimeEntry.minutes)).filter(
             func.date(TimeEntry.started_at) == today
         ).scalar() or 0
-        
-        # This week's time
-        week_time = db.query(func.sum(TimeEntry.minutes)).join(Goal).filter(
+
+        week_time = db.query(func.sum(TimeEntry.minutes)).filter(
             func.date(TimeEntry.started_at) >= week_start
         ).scalar() or 0
-        
-        # This month's time
-        month_time = db.query(func.sum(TimeEntry.minutes)).join(Goal).filter(
+
+        month_time = db.query(func.sum(TimeEntry.minutes)).filter(
             func.date(TimeEntry.started_at) >= month_start
         ).scalar() or 0
-        
-        return render_template("dashboard.html", 
-                             vocab_total=vocab_total,
-                             recent_vocab=recent_vocab,
-                             active_goals=active_goals,
-                             today_time=today_time,
-                             week_time=week_time,
-                             month_time=month_time)
+
+        return render_template(
+            "dashboard.html",
+            vocab_total=vocab_total,
+            recent_vocab=recent_vocab,
+            active_goals=active_goals,
+            today_time=today_time,
+            week_time=week_time,
+            month_time=month_time,
+        )
     finally:
         db.close()
 
 
-# Goals CRUD routes
+# ------------------------------------------------------------------------------
+# Goals CRUD (بدون تغییرات جدی)
+# ------------------------------------------------------------------------------
 @app.route("/goals", methods=["GET"])
 @login_required
 def goals_list() -> str:
-    """List all goals."""
     db = SessionLocal()
     try:
         goals = db.query(Goal).order_by(Goal.created_at.desc()).all()
@@ -398,15 +256,14 @@ def goals_list() -> str:
 @app.route("/goals", methods=["POST"])
 @login_required
 def create_goal() -> Response:
-    """Create a new goal."""
-    title = request.form.get("title", "").strip()
-    category = request.form.get("category", "").strip()
-    notes = request.form.get("notes", "").strip()
-    
+    title = (request.form.get("title") or "").strip()
+    category = (request.form.get("category") or "").strip()
+    notes = (request.form.get("notes") or "").strip()
+
     if not title:
         flash("Title is required.", "error")
         return redirect(url_for("goals_list"))
-    
+
     db = SessionLocal()
     try:
         goal = Goal(title=title, category=category, notes=notes)
@@ -421,23 +278,22 @@ def create_goal() -> Response:
 @app.route("/goals/<int:goal_id>/edit", methods=["POST"])
 @login_required
 def update_goal(goal_id: int) -> Response:
-    """Update a goal."""
-    title = request.form.get("title", "").strip()
-    category = request.form.get("category", "").strip()
-    notes = request.form.get("notes", "").strip()
+    title = (request.form.get("title") or "").strip()
+    category = (request.form.get("category") or "").strip()
+    notes = (request.form.get("notes") or "").strip()
     is_active = request.form.get("is_active") == "on"
-    
+
     if not title:
         flash("Title is required.", "error")
         return redirect(url_for("goals_list"))
-    
+
     db = SessionLocal()
     try:
         goal = db.query(Goal).filter(Goal.id == goal_id).first()
         if not goal:
             flash("Goal not found.", "error")
             return redirect(url_for("goals_list"))
-        
+
         goal.title = title
         goal.category = category
         goal.notes = notes
@@ -452,14 +308,13 @@ def update_goal(goal_id: int) -> Response:
 @app.route("/goals/<int:goal_id>/delete", methods=["POST"])
 @login_required
 def delete_goal(goal_id: int) -> Response:
-    """Delete a goal."""
     db = SessionLocal()
     try:
         goal = db.query(Goal).filter(Goal.id == goal_id).first()
         if not goal:
             flash("Goal not found.", "error")
             return redirect(url_for("goals_list"))
-        
+
         db.delete(goal)
         db.commit()
         flash("Goal deleted successfully!", "success")
@@ -468,22 +323,23 @@ def delete_goal(goal_id: int) -> Response:
         db.close()
 
 
-# Time logging routes
 @app.route("/goals/<int:goal_id>/log", methods=["GET"])
 @login_required
 def log_time_form(goal_id: int) -> str:
-    """Form to log time for a specific goal."""
     db = SessionLocal()
     try:
         goal = db.query(Goal).filter(Goal.id == goal_id).first()
         if not goal:
             flash("Goal not found.", "error")
             return redirect(url_for("goals_list"))
-        
-        # Get recent time entries for this goal
-        recent_entries = db.query(TimeEntry).filter(TimeEntry.goal_id == goal_id)\
-            .order_by(TimeEntry.started_at.desc()).limit(10).all()
-        
+
+        recent_entries = (
+            db.query(TimeEntry)
+            .filter(TimeEntry.goal_id == goal_id)
+            .order_by(TimeEntry.started_at.desc())
+            .limit(10)
+            .all()
+        )
         return render_template("goal_detail.html", goal=goal, recent_entries=recent_entries)
     finally:
         db.close()
@@ -492,36 +348,30 @@ def log_time_form(goal_id: int) -> str:
 @app.route("/goals/<int:goal_id>/log", methods=["POST"])
 @login_required
 def log_time(goal_id: int) -> Response:
-    """Log time for a specific goal."""
-    started_at_str = request.form.get("started_at", "").strip()
-    minutes = request.form.get("minutes", "").strip()
-    note = request.form.get("note", "").strip()
-    
+    started_at_str = (request.form.get("started_at") or "").strip()
+    minutes = (request.form.get("minutes") or "").strip()
+    note = (request.form.get("note") or "").strip()
+
     if not started_at_str or not minutes:
         flash("Started at and minutes are required.", "error")
         return redirect(url_for("log_time_form", goal_id=goal_id))
-    
+
     try:
-        started_at = datetime.fromisoformat(started_at_str.replace('Z', '+00:00'))
+        started_at = datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
         minutes_int = int(minutes)
     except (ValueError, TypeError):
         flash("Invalid date or minutes format.", "error")
         return redirect(url_for("log_time_form", goal_id=goal_id))
-    
+
     db = SessionLocal()
     try:
         goal = db.query(Goal).filter(Goal.id == goal_id).first()
         if not goal:
             flash("Goal not found.", "error")
             return redirect(url_for("goals_list"))
-        
-        time_entry = TimeEntry(
-            goal_id=goal_id,
-            started_at=started_at,
-            minutes=minutes_int,
-            note=note
-        )
-        db.add(time_entry)
+
+        entry = TimeEntry(goal_id=goal_id, started_at=started_at, minutes=minutes_int, note=note)
+        db.add(entry)
         db.commit()
         flash("Time logged successfully!", "success")
         return redirect(url_for("log_time_form", goal_id=goal_id))
@@ -529,125 +379,90 @@ def log_time(goal_id: int) -> Response:
         db.close()
 
 
-# API routes
-@app.route("/api/goals/summary", methods=["GET"])
-@login_required
-def goals_summary_api() -> Response:
-    """API endpoint for goals summary data."""
-    period = request.args.get("period", "day")  # day, week, month
-    
+# ------------------------------------------------------------------------------
+# Vocabulary views (DB-based)
+# ------------------------------------------------------------------------------
+def _get_vocab_list() -> List[Dict[str, Any]]:
     db = SessionLocal()
     try:
-        today = datetime.now().date()
-        
-        if period == "day":
-            start_date = today
-        elif period == "week":
-            start_date = today - timedelta(days=today.weekday())
-        elif period == "month":
-            start_date = today.replace(day=1)
-        else:
-            return jsonify({"error": "Invalid period"}), 400
-        
-        # Get goals with their time totals
-        goals_data = db.query(
-            Goal.id,
-            Goal.title,
-            Goal.category,
-            func.sum(TimeEntry.minutes).label('total_minutes')
-        ).outerjoin(TimeEntry).filter(
-            func.date(TimeEntry.started_at) >= start_date
-        ).group_by(Goal.id, Goal.title, Goal.category).all()
-        
-        result = []
-        for goal_id, title, category, total_minutes in goals_data:
-            result.append({
-                "id": goal_id,
-                "title": title,
-                "category": category,
-                "total_minutes": total_minutes or 0
-            })
-        
-        return jsonify({"goals": result, "period": period})
+        rows = db.query(Vocabulary).order_by(Vocabulary.created_at.desc()).all()
+        return [_serialize_vocab(v) for v in rows]
     finally:
         db.close()
-
-
-@app.before_request
-def require_auth():
-    """Require authentication for all routes except login, logout, healthz, and static files."""
-    # Allow access to login, logout, healthz, and static files without authentication
-    if request.endpoint in ['login', 'login_submit', 'logout', 'healthz']:
-        return None
-    
-    # Allow access to static files
-    if request.endpoint == 'static':
-        return None
-    
-    # Redirect to login if not authenticated
-    if not current_user.is_authenticated:
-        return redirect(url_for('login', next=request.url))
 
 
 @app.route("/", methods=["GET"])
 @login_required
 def index() -> str:
-    """Vocabulary page as home."""
-    items = get_sorted_items()
+    items = _get_vocab_list()
     return render_template("index.html", items=items, total=len(items), edit_entry_id=None)
 
 
 @app.route("/vocabulary", methods=["GET"])
 @login_required
 def vocabulary() -> str:
-    """Vocabulary management page."""
-    items = get_sorted_items()
+    items = _get_vocab_list()
     return render_template("index.html", items=items, total=len(items), edit_entry_id=None)
 
 
 @app.route("/add", methods=["POST"])
 @login_required
 def add_word() -> Response:
-    word = (request.form.get("word") or "").strip()
-    sentence = (request.form.get("sentence") or "").strip()
-    synonym = (request.form.get("synonym") or "").strip()
-    type_ = (request.form.get("type") or "").strip()
-    base_word = (request.form.get("base_word") or "").strip()
-    native_meaning = (request.form.get("native_meaning") or "").strip()
+    word = _str(request.form.get("word"))
+    sentence = _str(request.form.get("sentence"))
+    synonym = _str(request.form.get("synonym"))
+    type_ = _str(request.form.get("type"))       # => pos
+    base_word = _str(request.form.get("base_word"))
+    native_meaning = _str(request.form.get("native_meaning"))
 
     if not word:
         flash("Field 'word' is required.", "error")
         return redirect(url_for("vocabulary"))
 
-    items = load_items()
-    existing_keys = {deduplication_key(item) for item in items}
+    db = SessionLocal()
+    try:
+        exists = (
+            db.query(Vocabulary.id)
+            .filter(
+                Vocabulary.word == word,
+                Vocabulary.sentence == sentence,
+                Vocabulary.synonym == synonym,
+                Vocabulary.pos == type_,
+                Vocabulary.base_word == base_word,
+                Vocabulary.native_meaning == native_meaning,
+            )
+            .first()
+        )
+        if exists:
+            flash("This exact entry already exists.", "warning")
+            return redirect(url_for("vocabulary"))
 
-    new_entry = {
-        "id": uuid4().hex,
-        "word": word,
-        "sentence": sentence,
-        "synonym": synonym,
-        "type": type_,
-        "base_word": base_word,
-        "native_meaning": native_meaning,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+        new_word = Vocabulary(
+            word=word,
+            sentence=sentence,
+            synonym=synonym,
+            pos=type_,
+            base_word=base_word,
+            native_meaning=native_meaning,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(new_word)
+        db.commit()
+        flash("Word added successfully!", "success")
+    except Exception as e:
+        db.rollback()
+        flash(f"Error while saving: {e}", "error")
+    finally:
+        db.close()
 
-    if deduplication_key(new_entry) in existing_keys:
-        flash("This exact entry already exists.", "warning")
-        return redirect(url_for("vocabulary"))
-
-    items.append(new_entry)
-    save_items(items)
-    flash("Word added successfully!", "success")
     return redirect(url_for("vocabulary"))
 
 
 @app.route("/edit/<entry_id>", methods=["GET"])
 @login_required
 def edit_entry_form(entry_id: str) -> Response | str:
-    items = get_sorted_items()
-    if not any(item.get("id") == entry_id for item in items):
+    items = _get_vocab_list()
+    if not any(i["id"] == entry_id for i in items):
         flash("Entry not found.", "error")
         return redirect(url_for("vocabulary"))
     return render_template("index.html", items=items, total=len(items), edit_entry_id=entry_id)
@@ -656,158 +471,271 @@ def edit_entry_form(entry_id: str) -> Response | str:
 @app.route("/edit/<entry_id>", methods=["POST"])
 @login_required
 def edit_entry(entry_id: str) -> Response:
-    items = load_items()
-    target = next((item for item in items if item.get("id") == entry_id), None)
-
-    if target is None:
-        flash("Entry not found.", "error")
-        return redirect(url_for("vocabulary"))
-
-    word = (request.form.get("word") or "").strip()
-    sentence = (request.form.get("sentence") or "").strip()
-    synonym = (request.form.get("synonym") or "").strip()
-    type_ = (request.form.get("type") or "").strip()
-    base_word = (request.form.get("base_word") or "").strip()
-    native_meaning = (request.form.get("native_meaning") or "").strip()
+    word = _str(request.form.get("word"))
+    sentence = _str(request.form.get("sentence"))
+    synonym = _str(request.form.get("synonym"))
+    type_ = _str(request.form.get("type"))
+    base_word = _str(request.form.get("base_word"))
+    native_meaning = _str(request.form.get("native_meaning"))
 
     if not word:
         flash("Field 'word' is required.", "error")
         return redirect(url_for("edit_entry_form", entry_id=entry_id))
 
-    candidate = {
-        "word": word,
-        "sentence": sentence,
-        "synonym": synonym,
-        "type": type_,
-        "base_word": base_word,
-        "native_meaning": native_meaning,
-    }
-    candidate_key = deduplication_key(candidate)
+    db = SessionLocal()
+    try:
+        item = db.query(Vocabulary).filter(Vocabulary.id == entry_id).first()
+        if not item:
+            flash("Entry not found.", "error")
+            return redirect(url_for("vocabulary"))
 
-    for other in items:
-        if other.get("id") == entry_id:
-            continue
-        if deduplication_key(other) == candidate_key:
+        dup = (
+            db.query(Vocabulary.id)
+            .filter(
+                Vocabulary.id != entry_id,
+                Vocabulary.word == word,
+                Vocabulary.sentence == sentence,
+                Vocabulary.synonym == synonym,
+                Vocabulary.pos == type_,
+                Vocabulary.base_word == base_word,
+                Vocabulary.native_meaning == native_meaning,
+            )
+            .first()
+        )
+        if dup:
             flash("This exact entry already exists.", "warning")
             return redirect(url_for("edit_entry_form", entry_id=entry_id))
 
-    target.update(candidate)
-    save_items(items)
-    flash("Entry updated.", "success")
+        item.word = word
+        item.sentence = sentence
+        item.synonym = synonym
+        item.pos = type_
+        item.base_word = base_word
+        item.native_meaning = native_meaning
+        db.commit()
+        flash("Entry updated.", "success")
+    except Exception as e:
+        db.rollback()
+        flash(f"Error: {e}", "error")
+    finally:
+        db.close()
+
     return redirect(url_for("vocabulary"))
 
 
 @app.route("/delete/<entry_id>", methods=["POST"])
 @login_required
 def delete_entry(entry_id: str) -> Response:
-    items = load_items()
-    remaining = [item for item in items if item.get("id") != entry_id]
+    db = SessionLocal()
+    try:
+        item = db.query(Vocabulary).filter(Vocabulary.id == entry_id).first()
+        if not item:
+            flash("Entry not found.", "error")
+            return redirect(url_for("vocabulary"))
 
-    if len(remaining) == len(items):
-        flash("Entry not found.", "error")
-        return redirect(url_for("vocabulary"))
+        db.delete(item)
+        db.commit()
+        flash("Entry deleted.", "success")
+    except Exception as e:
+        db.rollback()
+        flash(f"Error: {e}", "error")
+    finally:
+        db.close()
 
-    save_items(remaining)
-    flash("Entry deleted.", "success")
     return redirect(url_for("vocabulary"))
 
 
+# ------------------------------------------------------------------------------
+# Import helpers (parsers)
+# ------------------------------------------------------------------------------
+def _parse_csv(data: bytes) -> List[Dict[str, str]]:
+    try:
+        txt = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("CSV file must be UTF-8 encoded.") from exc
+    reader = csv.DictReader(io.StringIO(txt))
+    if reader.fieldnames is None:
+        raise ValueError("CSV file is missing a header row.")
+    rows: List[Dict[str, str]] = []
+    for raw in reader:
+        prepared = {_norm_key(k): raw[k] for k in raw.keys()}
+        entry = {f: _str(prepared.get(f, "")) for f in IMPORT_FIELDS}
+        if not any(entry[f] for f in DEDUP_FIELDS):
+            continue
+        rows.append(entry)
+    return rows
+
+
+def _parse_json(data: bytes) -> List[Dict[str, str]]:
+    try:
+        txt = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("JSON file must be UTF-8 encoded.") from exc
+    try:
+        payload: Any = json.loads(txt)
+    except json.JSONDecodeError as exc:
+        raise ValueError("JSON file is not valid JSON.") from exc
+
+    if isinstance(payload, dict):
+        if "items" in payload and isinstance(payload["items"], list):
+            payload = payload["items"]
+        else:
+            payload = [payload]
+    if not isinstance(payload, list):
+        raise ValueError("JSON file must contain a list of entries.")
+
+    rows: List[Dict[str, str]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        prepared = {_norm_key(k): v for k, v in item.items()}
+        entry = {f: _str(prepared.get(f, "")) for f in IMPORT_FIELDS}
+        if not any(entry[f] for f in DEDUP_FIELDS):
+            continue
+        rows.append(entry)
+    return rows
+
+
+def _parse_xlsx(data: bytes) -> List[Dict[str, str]]:
+    buf = io.BytesIO(data)
+    wb = load_workbook(buf, read_only=True, data_only=True)
+    try:
+        sh = wb.active
+        header = next(sh.iter_rows(values_only=True), None)
+        if header is None:
+            return []
+        headers = [_norm_key(h) for h in header]
+        rows: List[Dict[str, str]] = []
+        for row_values in sh.iter_rows(values_only=True, min_row=2):
+            raw: Dict[str, Any] = {}
+            for i, v in enumerate(row_values):
+                if i >= len(headers):
+                    continue
+                key = headers[i]
+                if not key:
+                    continue
+                raw[key] = v
+            entry = {f: _str(raw.get(f, "")) for f in IMPORT_FIELDS}
+            if not any(entry[f] for f in DEDUP_FIELDS):
+                continue
+            rows.append(entry)
+        return rows
+    finally:
+        wb.close()
+
+
+def _parse_payload(data: bytes, ext: str) -> List[Dict[str, str]]:
+    ext = ext.lower()
+    if ext == ".csv":
+        return _parse_csv(data)
+    if ext == ".json":
+        return _parse_json(data)
+    if ext == ".xlsx":
+        return _parse_xlsx(data)
+    raise ValueError("Unsupported file type.")
+
+
+# ------------------------------------------------------------------------------
+# Import/Export routes (DB-based)
+# ------------------------------------------------------------------------------
 @app.route("/export/csv", methods=["GET"])
 @login_required
 def export_csv() -> Response:
-    items = get_sorted_items()
+    db = SessionLocal()
+    try:
+        rows = db.query(Vocabulary).order_by(Vocabulary.created_at.desc()).all()
+        items = [_serialize_vocab(v) for v in rows]
+    finally:
+        db.close()
 
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=EXPORT_FIELDS, extrasaction="ignore", lineterminator="\n")
-    writer.writeheader()
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=EXPORT_FIELDS, extrasaction="ignore", lineterminator="\n")
+    w.writeheader()
+    for it in items:
+        w.writerow({f: it.get(f, "") for f in EXPORT_FIELDS})
 
-    for item in items:
-        writer.writerow({field: item.get(field, "") for field in EXPORT_FIELDS})
-
-    csv_data = buffer.getvalue()
-    buffer.close()
-
-    filename = "vocab_export_" + export_timestamp() + ".csv"
-    response = Response(csv_data, mimetype="text/csv; charset=utf-8")
-    response.headers["Content-Disposition"] = f"attachment; filename=\"{filename}\""
-    return response
+    filename = f"vocab_export_{export_timestamp()}.csv"
+    resp = Response(buf.getvalue(), mimetype="text/csv; charset=utf-8")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
 
 
 @app.route("/export/html", methods=["GET"])
 @login_required
 def export_html() -> Response:
-    items = get_sorted_items()
+    db = SessionLocal()
+    try:
+        rows = db.query(Vocabulary).order_by(Vocabulary.created_at.desc()).all()
+        items = [_serialize_vocab(v) for v in rows]
+    finally:
+        db.close()
+
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     html_output = render_template("export.html", items=items, generated_at=generated_at)
-
     filename = f"vocab_export_{export_timestamp()}.html"
-    response = Response(html_output, mimetype="text/html; charset=utf-8")
-    response.headers["Content-Disposition"] = f"attachment; filename=\"{filename}\""
-    return response
+    resp = Response(html_output, mimetype="text/html; charset=utf-8")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
 
 
 @app.route("/export/json", methods=["GET"])
 @login_required
 def export_json() -> Response:
-    items = get_sorted_items()
-    payload_data = [{field: item.get(field, "") for field in EXPORT_FIELDS} for item in items]
-    payload = json.dumps(payload_data, ensure_ascii=False, indent=2)
+    db = SessionLocal()
+    try:
+        rows = db.query(Vocabulary).order_by(Vocabulary.created_at.desc()).all()
+        items = [_serialize_vocab(v) for v in rows]
+    finally:
+        db.close()
 
-    filename = "vocab_export_" + export_timestamp() + ".json"
-    response = Response(payload, mimetype="application/json; charset=utf-8")
-    response.headers["Content-Disposition"] = f"attachment; filename=\"{filename}\""
-    return response
+    payload = json.dumps([{f: it.get(f, "") for f in EXPORT_FIELDS} for it in items], ensure_ascii=False, indent=2)
+    filename = f"vocab_export_{export_timestamp()}.json"
+    resp = Response(payload, mimetype="application/json; charset=utf-8")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
 
 
 @app.route("/export/xlsx", methods=["GET"])
 @login_required
 def export_xlsx() -> Response:
-    items = get_sorted_items()
-    rows_for_export = [{field: item.get(field, "") for field in EXPORT_FIELDS} for item in items]
+    db = SessionLocal()
+    try:
+        rows = db.query(Vocabulary).order_by(Vocabulary.created_at.desc()).all()
+        items = [_serialize_vocab(v) for v in rows]
+    finally:
+        db.close()
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Vocabulary"
+    wb = Workbook()
+    sh = wb.active
+    sh.title = "Vocabulary"
 
-    headers = list(EXPORT_FIELDS)
-    sheet.append(headers)
-
+    sh.append(list(EXPORT_FIELDS))
     header_font = Font(bold=True)
-    thin_border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin"),
-    )
+    thin = Border(left=Side(style="thin"), right=Side(style="thin"),
+                  top=Side(style="thin"), bottom=Side(style="thin"))
 
-    for cell in sheet[1]:
-        cell.font = header_font
-        cell.border = thin_border
+    for c in sh[1]:
+        c.font = header_font
+        c.border = thin
 
-    for row_data in rows_for_export:
-        row = [row_data.get(field, "") for field in headers]
-        sheet.append(row)
-        for cell in sheet[sheet.max_row]:
-            cell.border = thin_border
+    for it in items:
+        row = [it.get(f, "") for f in EXPORT_FIELDS]
+        sh.append(row)
+        for c in sh[sh.max_row]:
+            c.border = thin
 
-    for column_index, column_cells in enumerate(sheet.columns, start=1):
-        max_length = 0
-        for cell in column_cells:
-            value = cell.value
-            if value is None:
-                continue
-            max_length = max(max_length, len(str(value)))
-        adjusted_width = min(max_length + 2, 60) if max_length else 12
-        sheet.column_dimensions[get_column_letter(column_index)].width = adjusted_width
+    for idx, col in enumerate(sh.columns, start=1):
+        maxlen = max((len(str(c.value)) for c in col if c.value is not None), default=0)
+        sh.column_dimensions[get_column_letter(idx)].width = min(maxlen + 2, 60) if maxlen else 12
 
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    buffer.seek(0)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
 
-    filename = "vocab_export_" + export_timestamp() + ".xlsx"
-    response = Response(buffer.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    response.headers["Content-Disposition"] = f"attachment; filename=\"{filename}\""
-    return response
+    filename = f"vocab_export_{export_timestamp()}.xlsx"
+    resp = Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
 
 
 @app.route("/import", methods=["POST"])
@@ -819,8 +747,8 @@ def import_words() -> Response:
         return redirect(url_for("vocabulary"))
 
     filename = secure_filename(file.filename)
-    extension = Path(filename).suffix.lower()
-    if extension not in ALLOWED_IMPORT_EXTENSIONS:
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_IMPORT_EXTENSIONS:
         flash("Unsupported file type. Please upload a CSV, JSON, or XLSX file.", "error")
         return redirect(url_for("vocabulary"))
 
@@ -830,49 +758,24 @@ def import_words() -> Response:
         return redirect(url_for("vocabulary"))
 
     try:
-        parsed_rows = parse_import_payload(data, extension)
+        rows = _parse_payload(data, ext)
     except ValueError as exc:
         flash(str(exc), "error")
         return redirect(url_for("vocabulary"))
 
-    if not parsed_rows:
+    if not rows:
         flash("No valid rows found in the uploaded file.", "warning")
         return redirect(url_for("vocabulary"))
 
-    items = load_items()
-    existing_keys = {deduplication_key(item) for item in items}
-
-    new_rows: List[Dict[str, str]] = []
-    duplicate_count = 0
-    missing_word_count = 0
-
-    for row in parsed_rows:
-        if not row.get("word"):
-            missing_word_count += 1
-            continue
-        key = deduplication_key(row)
-        if key in existing_keys:
-            duplicate_count += 1
-            continue
-        existing_keys.add(key)
-        new_rows.append(row)
-
-    total_rows = len(parsed_rows)
-    if not new_rows:
-        flash("All rows in the uploaded file already exist or are invalid.", "warning")
-        session.pop(PENDING_IMPORT_SESSION_KEY, None)
-        session.pop(PENDING_IMPORT_META_SESSION_KEY, None)
-        return redirect(url_for("vocabulary"))
-
-    session[PENDING_IMPORT_SESSION_KEY] = new_rows
+    # نگه داشتن برای preview
+    session[PENDING_IMPORT_SESSION_KEY] = rows
     session[PENDING_IMPORT_META_SESSION_KEY] = {
-        "total_rows": total_rows,
-        "duplicate_rows": duplicate_count,
-        "skipped_missing_word": missing_word_count,
+        "total_rows": len(rows),
+        "duplicate_rows": 0,            # در confirm حساب می‌کنیم
+        "skipped_missing_word": 0,      # در confirm حساب می‌کنیم
         "filename": filename,
     }
     session.modified = True
-
     return redirect(url_for("import_preview"))
 
 
@@ -887,8 +790,6 @@ def import_preview() -> Response | str:
         return redirect(url_for("vocabulary"))
 
     total_rows = int(meta.get("total_rows", len(pending_rows)))
-    duplicate_count = int(meta.get("duplicate_rows", 0))
-    skipped_missing_word = int(meta.get("skipped_missing_word", 0))
     filename = meta.get("filename", "")
     preview_limit = 50
     preview_rows = pending_rows[:preview_limit]
@@ -898,8 +799,8 @@ def import_preview() -> Response | str:
         filename=filename,
         total_rows=total_rows,
         new_count=len(pending_rows),
-        duplicate_count=duplicate_count,
-        skipped_missing_word=skipped_missing_word,
+        duplicate_count=int(meta.get("duplicate_rows", 0)),
+        skipped_missing_word=int(meta.get("skipped_missing_word", 0)),
         preview_rows=preview_rows,
         preview_limit=preview_limit,
     )
@@ -908,48 +809,84 @@ def import_preview() -> Response | str:
 @app.route("/import/confirm", methods=["POST"])
 @login_required
 def confirm_import() -> Response:
-    pending_rows = session.get(PENDING_IMPORT_SESSION_KEY)
+    pending_rows = session.get(PENDING_IMPORT_SESSION_KEY) or []
     if not pending_rows:
         flash("No rows pending import.", "warning")
         return redirect(url_for("vocabulary"))
 
-    items = load_items()
-    existing_keys = {deduplication_key(item) for item in items}
+    imported = 0
+    duplicate = 0
+    missing_word = 0
 
-    imported_count = 0
-    for row in pending_rows:
-        key = deduplication_key(row)
-        if key in existing_keys:
-            continue
-        existing_keys.add(key)
-        created_at = stringify_value(row.get("created_at")) or datetime.now(timezone.utc).isoformat()
-        entry = {
-            "id": uuid4().hex,
-            "word": stringify_value(row.get("word")),
-            "sentence": stringify_value(row.get("sentence")),
-            "synonym": stringify_value(row.get("synonym")),
-            "type": stringify_value(row.get("type")),
-            "base_word": stringify_value(row.get("base_word")),
-            "native_meaning": stringify_value(row.get("native_meaning")),
-            "created_at": created_at,
-        }
-        items.append(entry)
-        imported_count += 1
+    db = SessionLocal()
+    try:
+        for row in pending_rows:
+            word = _str(row.get("word"))
+            if not word:
+                missing_word += 1
+                continue
 
-    session.pop(PENDING_IMPORT_SESSION_KEY, None)
-    session.pop(PENDING_IMPORT_META_SESSION_KEY, None)
-    session.modified = True
+            sentence = _str(row.get("sentence"))
+            synonym = _str(row.get("synonym"))
+            pos = _str(row.get("type"))
+            base_word = _str(row.get("base_word"))
+            native_meaning = _str(row.get("native_meaning"))
+            created_raw = _str(row.get("created_at"))
 
-    if imported_count:
-        save_items(items)
-        entry_word = "entry" if imported_count == 1 else "entries"
-        flash(f"Imported {imported_count} new {entry_word}.", "success")
-    else:
-        flash("No new entries were imported.", "warning")
+            exists = (
+                db.query(Vocabulary.id)
+                .filter(
+                    Vocabulary.word == word,
+                    Vocabulary.sentence == sentence,
+                    Vocabulary.synonym == synonym,
+                    Vocabulary.pos == pos,
+                    Vocabulary.base_word == base_word,
+                    Vocabulary.native_meaning == native_meaning,
+                )
+                .first()
+            )
+            if exists:
+                duplicate += 1
+                continue
+
+            created_at = None
+            if created_raw:
+                try:
+                    created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+                except Exception:
+                    created_at = None
+            if created_at is None:
+                created_at = datetime.now(timezone.utc)
+
+            db.add(
+                Vocabulary(
+                    word=word,
+                    sentence=sentence,
+                    synonym=synonym,
+                    pos=pos,
+                    base_word=base_word,
+                    native_meaning=native_meaning,
+                    created_at=created_at,
+                )
+            )
+            imported += 1
+
+        db.commit()
+        flash(f"Imported {imported} new {'entry' if imported == 1 else 'entries'}.", "success")
+    except Exception as e:
+        db.rollback()
+        flash(f"Import failed: {e}", "error")
+    finally:
+        session.pop(PENDING_IMPORT_SESSION_KEY, None)
+        session.pop(PENDING_IMPORT_META_SESSION_KEY, None)
+        session.modified = True
+        db.close()
 
     return redirect(url_for("vocabulary"))
 
 
+# ------------------------------------------------------------------------------
+# Run
+# ------------------------------------------------------------------------------
 if __name__ == "__main__":
-    ensure_store()
     app.run(host="127.0.0.1", port=5000, debug=False)
